@@ -1,0 +1,138 @@
+/**
+ * 第 12 周任务 3 · 覆盖风险的临时实验（留档，不参与 npm run test）。
+ *
+ * 目的：验证 PPT P26/P29 的说法 —— 双 Effect 的写入用的是首次渲染的空数组，
+ *       到底会不会把 localStorage 里的原数据覆盖掉。
+ *
+ * 跑法（week12 工程根目录）：
+ *   node node_modules/vitest/vitest.mjs run src/double-effect.experiment.test.tsx
+ *
+ * 实测输出（2026-11-17）：
+ *   A 写入序列 = ["[]","[{\"id\":1,\"text\":\"测试任务\",\"completed\":false}]"]
+ *   A 最终存储 = [{"id":1,"text":"测试任务","completed":false}]
+ *   B 写入序列 = ["[]"]
+ *   B 最终存储 = []
+ *   C 写入序列 = ["[{\"id\":1,\"text\":\"测试任务\",\"completed\":false}]"]
+ *
+ * 结论：
+ *   A 同步读：覆盖窗口真实存在（先写入 []），但同一轮提交里又被纠正，数据没丢；
+ *   B 异步读 + 读取返回前卸载：纠正的那次写入不会再来，原数据被永久覆盖成 []；
+ *   C 惰性初始化 + 单 Effect：第一次写入带的就是原数据，覆盖窗口不存在。
+ * 所以「双 Effect 会覆盖」的准确说法是：写入用了首次渲染的快照，能否被后续渲染纠正不保证。
+ */
+/**
+ * 临时实验（不留在 src/ 里）：把文档任务 3 的「靶子代码」单独跑一遍，
+ * 记录写入再读的实际顺序，看看双 Effect 到底会不会覆盖原有数据。
+ *
+ * 录制方式：靶子代码的写入 Effect 里换成一个会记日志的 save()，
+ * 调用顺序与真实代码完全一致，只是多记一行 —— 不去 spy jsdom 的 Storage（它是 proxy，spy 不可靠）。
+ */
+import { beforeEach, expect, test } from 'vitest';
+import { act, cleanup, render, screen, waitFor } from '@testing-library/react';
+import { useEffect, useState } from 'react';
+
+interface Todo {
+  id: number;
+  text: string;
+  completed: boolean;
+}
+
+const KEY = 'todos';
+const SEED: Todo[] = [{ id: 1, text: '测试任务', completed: false }];
+const writeLog: string[] = [];
+
+function save(items: Todo[]): void {
+  writeLog.push(JSON.stringify(items));
+  localStorage.setItem(KEY, JSON.stringify(items));
+}
+
+function list(items: Todo[]) {
+  return <ul>{items.map((t) => <li key={t.id}>{t.text}</li>)}</ul>;
+}
+
+// 靶子代码原样（只把 setItem 换成 save，用来记录写入了什么）
+function SyncVersion() {
+  const [todos, setTodos] = useState<Todo[]>([]);
+  useEffect(() => {
+    const saved = localStorage.getItem(KEY);
+    if (saved) setTodos(JSON.parse(saved));
+  }, []);
+  useEffect(() => {
+    save(todos);
+  }, [todos]);
+  return list(todos);
+}
+
+// 只把「读取」挪到异步（真实工程里的服务端取数、懒加载都是这样）
+function AsyncVersion() {
+  const [todos, setTodos] = useState<Todo[]>([]);
+  useEffect(() => {
+    const timer = setTimeout(() => {
+      const saved = localStorage.getItem(KEY);
+      if (saved) setTodos(JSON.parse(saved));
+    }, 10);
+    return () => clearTimeout(timer);
+  }, []);
+  useEffect(() => {
+    save(todos);
+  }, [todos]);
+  return list(todos);
+}
+
+// 修好之后：惰性初始化 + 单 Effect
+function FixedVersion() {
+  const [todos, setTodos] = useState<Todo[]>(() => {
+    try {
+      const saved = localStorage.getItem(KEY);
+      if (saved === null) return [];
+      const parsed: unknown = JSON.parse(saved);
+      return Array.isArray(parsed) ? (parsed as Todo[]) : [];
+    } catch {
+      return [];
+    }
+  });
+  useEffect(() => {
+    save(todos);
+  }, [todos]);
+  return list(todos);
+}
+
+beforeEach(() => {
+  cleanup();
+  writeLog.length = 0;
+  localStorage.clear();
+  localStorage.setItem(KEY, JSON.stringify(SEED));
+});
+
+test('实验A：双 Effect + 同步读 —— 先写了一次空数组，再被下一帧纠正', async () => {
+  render(<SyncVersion />);
+  await waitFor(() => screen.getByText('测试任务'));
+
+  console.log('A 写入序列 =', JSON.stringify(writeLog));
+  console.log('A 最终存储 =', localStorage.getItem(KEY));
+  expect(writeLog).toEqual(['[]', JSON.stringify(SEED)]);
+  expect(screen.getByText('测试任务')).toBeDefined();
+});
+
+test('实验B：双 Effect + 异步读，读取还没回来组件就卸载 —— 空数组被永久留下', async () => {
+  render(<AsyncVersion />);
+  cleanup(); // 用户刚进来就切走：读取的定时器被清理，纠正的那次写入永远不来了
+  await act(async () => {
+    await new Promise((r) => setTimeout(r, 30));
+  });
+
+  console.log('B 写入序列 =', JSON.stringify(writeLog));
+  console.log('B 最终存储 =', localStorage.getItem(KEY));
+  expect(localStorage.getItem(KEY)).toBe('[]');
+});
+
+test('实验C：惰性初始化 + 单 Effect —— 只有一次写入，写入的就是原数据', async () => {
+  render(<FixedVersion />);
+  await waitFor(() => screen.getByText('测试任务'));
+
+  console.log('C 写入序列 =', JSON.stringify(writeLog));
+  expect(writeLog).toEqual([JSON.stringify(SEED)]);
+  expect(screen.getByText('测试任务')).toBeDefined();
+});
+
+
