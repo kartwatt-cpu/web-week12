@@ -8,7 +8,7 @@ import path from 'node:path';
 const APP = process.argv[2] ?? 'http://127.0.0.1:5189/';
 const CHROME = 'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe';
 const PORT = 9229;
-const OUT_DIR = path.resolve('shots');
+const OUT_DIR = path.resolve('docs', 'images');
 const VIEW = { width: 1200, height: 900, scale: 2 };
 
 const TASKS = [

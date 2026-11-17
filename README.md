@@ -53,7 +53,7 @@ src/
 ```bash
 npm run dev      # 本地开发，5173 端口
 npm run build    # tsc --noEmit && vite build
-npm run test     # vitest run，当前 31 条全绿
+npm run test     # vitest run，当前 52 条全绿
 npm run lint     # eslint src/，0 error / 0 warning
 ```
 
@@ -70,7 +70,8 @@ npm run lint     # eslint src/，0 error / 0 warning
 ## 五、README 里记一笔踩过的坑
 
 1. Node 25 自带实验性的全局 `localStorage`，会盖住 jsdom 的实现，连 `clear()` 都没有；
-   用 `src/test-setup.ts` 补一个内存版 `Storage` 之后，6 条组件测试才跑起来。
+   `src/test-setup.ts` 现在优先取 jsdom 自己那份 `window.localStorage`（不会再触发那条
+   `ExperimentalWarning`），拿不到时才退回内存版 `Storage`。
 2. `getByLabelText` 返回 `HTMLElement`，`.value` 不存在，`tsc --noEmit` 直接拦下；
    断言前显式收窄成 `HTMLInputElement`。
 3. 靶子代码「只修引用、保留 `innerHTML`」的版本（PPT 第 27 页第二关）确实能过编译，
@@ -84,16 +85,31 @@ npm run lint     # eslint src/，0 error / 0 warning
 | `src/theme/ThemeContext.tsx` | `createContext` + `ThemeProvider` + `useTheme`；默认值给 `undefined`，脱离 Provider 直接抛错 |
 | `src/components/ThemeToggle.tsx` | 主题消费者之一，不接收任何 Props |
 | `src/theme/ThemeContext.test.tsx` | 5 条用例：默认 light、切换、读回已存主题、脏值回落、Provider 外抛错 |
-| `src/components/TodoPersistence.test.tsx` | 4 条用例：已有数据不被覆盖、坏数据回落、StrictMode 双执行、新增后写回两条 |
+| `src/components/TodoPersistence.test.tsx` | 8 条用例：已有数据不被覆盖、坏数据/读失败暂停写入、重读与覆盖两条出口、StrictMode 双执行 |
+| `src/components/TodoItem.a11y.test.tsx` | 6 条用例：checkbox 可聚焦、有可访问名、空格/点击同一条链路 |
+| `src/todo.validate.test.ts` | 6 条用例：`validateTodoText` 的通过/拒绝原因与幂等性 |
 
-改动点（W10 的 `todo.ts` / `actions.ts` 一行未动）：
+改动点（W10 数据层的函数签名保持兼容）：
 
 1. `theme` 走 Context：`TodoApp` 与 `ThemeToggle` 各自 `useTheme()`，中间层不写任何 Props；
    深色样式由 `[data-theme='dark']` 的 CSS 覆盖，不靠传属性。
 2. `value` 用 `useMemo`、`toggleTheme` 用 `useCallback`，避免 Provider 每次渲染都换新引用。
-3. 持久化沿用「惰性初始化 + 单 Effect 写入」：`useState(loadTodos)` 只读一次，
-   `useEffect(..., [todos])` 是全场唯一写入点；脏数据由 `parseTodos` 的两道闸门（try-catch + `Array.isArray`）挡住。
+3. 持久化沿用「惰性初始化 + 单 Effect 写入」：`useState(readStored)` 只读一次，
+   `useEffect(..., [todos, persistPaused])` 是全场唯一写入点。
 4. 主题自身也持久化到 `localStorage.theme`，写失败（隐私模式）只吞异常、不影响切换。
 
-验证：`test` 31 条全绿（原 22 条 + 本周 9 条），`build` 与 `lint` 0 错；浏览器实点三张截图在 `shots/`，
-覆盖风险的打点实验见 `docs/task3-overwrite-check.tsx.txt`，本周 AI 协作日志见 `docs/AI协作日志W12.docx`。
+### 复审修正（按反馈逐条改）
+
+1. **校验只有一份**：新增 `validateTodoText`（`todo.ts`），界面与数据层共用；`handleAdd` 用它的结果决定
+   是否清空输入，失败时保留输入并显示原因（超 200 字、`<b></b>` 清洗后为空都覆盖），编辑失败也提示。
+2. **键盘可用**：完成状态改用原生 `<input type="checkbox">` + `<label htmlFor>`，Tab 能聚焦、空格能切换，
+   `checked` 直接表达完成状态；`TodoItem.a11y.test.tsx` 与浏览器里的真实 Tab/Space 都验过。
+3. **读取失败不覆盖原数据**：`readStored()` 区分「没有数据」和「读取失败 / 数据坏了」，后者给出提示并
+   暂停自动写入，同时提供「重新读取本地数据」与「以当前内容覆盖」两个明确出口。
+4. **updater 变纯**：`TodoAction` 的 `add` 改为携带已构造好的 `Todo`，`id` 在事件处理阶段由 `nextId()`
+   生成，`applyTodoAction` 不再读时钟、不改模块变量，StrictMode 重复调用结果一致。
+
+验证：`test` 52 条全绿（W11 的 22 条 + 本周 30 条），`build` 与 `lint` 0 错；浏览器实点三张截图在
+`docs/images/`，覆盖风险的打点实验见 `docs/task3-overwrite-check.tsx.txt`，本周 AI 协作日志见
+`docs/AI协作日志W12.docx`。复审修正另用 `scripts/verify-review.mjs`（真实 Tab/Space 按键、校验失败、
+读取失败暂停写入）在 Chrome 里跑过一遍。

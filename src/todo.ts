@@ -31,23 +31,44 @@ export function nextId(): number {
   return Date.now() * 1000 + idSeq;
 }
 
-// AI 第一版把嵌套改成 early return，但删掉了长度上限与 HTML 清洗；
-// 审查时对照 diff 恢复这两行，保留 early return 的结构。
-function normalizeText(input: unknown): string | null {
+/** 校验结果：通过时带清洗后的文本，不通过时带可以直接给用户看的原因。 */
+export type TodoTextCheck =
+  | { readonly ok: true; readonly text: string }
+  | { readonly ok: false; readonly reason: string };
+
+/**
+ * 唯一的文本校验入口：界面（事件处理函数）和数据层都调它，
+ * 这样“界面上通过了、数据层却拒收”的两套规则不会漂移。
+ */
+export function validateTodoText(input: unknown): TodoTextCheck {
   if (typeof input !== 'string') {
-    return null;
+    return { ok: false, reason: '输入内容无效，请重新输入。' };
   }
   const trimmed = input.trim();
-  if (trimmed === '' || trimmed.length > MAX_TEXT_LENGTH) {
-    return null;
+  if (trimmed === '') {
+    return { ok: false, reason: '内容为空，请输入后再添加。' };
+  }
+  if (trimmed.length > MAX_TEXT_LENGTH) {
+    return { ok: false, reason: '内容超过 ' + MAX_TEXT_LENGTH + ' 字，请精简后再添加。' };
   }
   const cleaned = trimmed.replace(/<[^>]*>/g, '').trim();
   if (cleaned === '') {
-    return null;
+    return { ok: false, reason: '内容去掉标签后为空，请重新输入。' };
   }
-  return cleaned;
+  return { ok: true, text: cleaned };
 }
 
+// 数据层内部用：校验不过就返回 null。
+function normalizeText(input: unknown): string | null {
+  const checked = validateTodoText(input);
+  return checked.ok ? checked.text : null;
+}
+
+/**
+ * W10 的批量添加入口：自带 id 生成，保留它是为了不破坏数据层既有的 16 条回归用例。
+ * React 应用层**不要**用它 —— id 必须在事件处理阶段生成（见 TodoApp.handleAdd），
+ * 否则 setTodos 的 updater 会读时钟、改模块变量，StrictMode 下同一输入得不到同一结果。
+ */
 export function addTodo(todos: Todo[], text: unknown): void {
   const normalized = normalizeText(text);
   if (normalized === null) {
